@@ -5,9 +5,12 @@
 #include <stdlib.h>
 #include <vector>
 #include <map>
+#include "raylib.h"
+#include "raymath.h"
 
 static std::vector<Entity> entities;
 static std::map<uint16_t, ENetPeer*> controlledMap;
+static std::map<uint16_t, Vector2> targets;
 
 void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
 {
@@ -24,9 +27,10 @@ void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
                    0x00440000 * (rand() % 5) +
                    0x00004400 * (rand() % 5) +
                    0x00000044 * (rand() % 5);
-  float x = (rand() % 4) * 200.f;
-  float y = (rand() % 4) * 200.f;
-  Entity ent = {color, x, y, newEid};
+  float x = rand() % 700 - 350;
+  float y = rand() % 700 - 350;
+  float size = rand() % 50 + 10;
+  Entity ent = {color, {x, y}, size, newEid};
   entities.push_back(ent);
 
   controlledMap[newEid] = peer;
@@ -42,23 +46,37 @@ void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
 void on_state(ENetPacket *packet)
 {
   uint16_t eid = invalid_entity;
-  float x = 0.f; float y = 0.f;
-  deserialize_entity_state(packet, eid, x, y);
-  for (Entity &e : entities)
-    if (e.eid == eid)
-    {
-      e.x = x;
-      e.y = y;
+  Vector2 pos;
+  deserialize_entity_state(packet, eid, pos);
+  for (Entity &e : entities) {
+    if (e.eid == eid) {
+      e.pos = pos;
     }
+  }
 }
 
-int main(int argc, const char **argv)
-{
-  if (enet_initialize() != 0)
-  {
+void GenerateAiEntities() {
+  for (uint16_t i = 0; i < 10; ++i) {
+    uint32_t color = 0xff000000 +
+                     0x00440000 * (rand() % 5) +
+                     0x00004400 * (rand() % 5) +
+                     0x00000044 * (rand() % 5);
+    float x = rand() % 700 - 350;
+    float y = rand() % 700 - 350;
+    float size = rand() % 50 + 10;
+    Entity ent = {color, {x, y}, size, i};
+    entities.push_back(ent);
+    Vector2 target = {rand() % 700 - 350, rand() % 700 - 350};
+    targets[i] = target;
+  }
+}
+
+int main(int argc, const char **argv) {
+  if (enet_initialize() != 0) {
     printf("Cannot init ENet");
     return 1;
   }
+
   ENetAddress address;
 
   address.host = ENET_HOST_ANY;
@@ -66,25 +84,22 @@ int main(int argc, const char **argv)
 
   ENetHost *server = enet_host_create(&address, 32, 2, 0, 0);
 
-  if (!server)
-  {
+  if (!server) {
     printf("Cannot create ENet server\n");
     return 1;
   }
 
-  while (true)
-  {
+  GenerateAiEntities();
+
+  while (true) {
     ENetEvent event;
-    while (enet_host_service(server, &event, 0) > 0)
-    {
-      switch (event.type)
-      {
+    while (enet_host_service(server, &event, 0) > 0) {
+      switch (event.type) {
       case ENET_EVENT_TYPE_CONNECT:
         printf("Connection with %x:%u established\n", event.peer->address.host, event.peer->address.port);
         break;
       case ENET_EVENT_TYPE_RECEIVE:
-        switch (get_packet_type(event.packet))
-        {
+        switch (get_packet_type(event.packet)) {
           case E_CLIENT_TO_SERVER_JOIN:
             on_join(event.packet, event.peer, server);
             break;
@@ -99,14 +114,43 @@ int main(int argc, const char **argv)
       };
     }
     static int t = 0;
-    for (const Entity &e : entities)
-      for (size_t i = 0; i < server->peerCount; ++i)
-      {
-        ENetPeer *peer = &server->peers[i];
-        if (controlledMap[e.eid] != peer)
-          send_snapshot(peer, e.eid, e.x, e.y);
+    for (Entity &e : entities) {
+      for (Entity &e2 : entities) {
+        if (e2.eid != e.eid) {
+          if (Vector2Distance(e.pos, e2.pos) < e.size + e2.size) {
+            if (e.size > e2.size) {
+              e.size = std::min(e.size + e2.size / 2.f, 50.f);
+              e2.size = std::max(e2.size / 2.f, 5.f);
+              e2.pos = {rand() % 700 - 350, rand() % 700 - 350};
+
+
+              if (controlledMap.contains(e2.eid))
+                send_snapshot(controlledMap[e2.eid], e2.eid, e2.pos, e2.size);
+              if (controlledMap.contains(e.eid))
+                send_snapshot(controlledMap[e.eid], e.eid, e.pos, e.size);
+            }
+          }
+        }
       }
-    //usleep(400000);
+
+      if (targets.contains(e.eid)) {
+        if (Vector2Distance(targets[e.eid], e.pos) < 1.f) {
+          Vector2 target = {rand() % 700 - 350, rand() % 700 - 350};
+
+          targets[e.eid] = target;
+        }
+        e.pos = Vector2Add(e.pos, Vector2Scale(Vector2Normalize(Vector2Subtract(targets[e.eid], e.pos)), 100.f / 60));
+      }
+
+      for (size_t i = 0; i < server->peerCount; ++i) {
+        ENetPeer *peer = &server->peers[i];
+        if (!controlledMap.contains(e.eid) || controlledMap[e.eid] != peer) {
+          send_snapshot(peer, e.eid, {e.pos.x, e.pos.y}, e.size);
+        }
+      }
+
+    }
+    usleep(1000000.0 / 60);
   }
 
   enet_host_destroy(server);
