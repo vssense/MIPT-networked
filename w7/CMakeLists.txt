@@ -21,6 +21,7 @@ set(W7_SERVER_SOURCES
 
 
 include_directories("../3rdParty/enet/include")
+include_directories("../3rdParty/raylib/src")
 
 if(MSVC)
   # https://github.com/raysan5/raylib/issues/857
